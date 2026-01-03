@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OllamaCode - An agentic coding assistant for Ollama
+OllamaCoder - An agentic coding assistant for Ollama
 Inspired by Claude Code's architecture with autonomous capabilities
 
 Features:
@@ -12,6 +12,7 @@ Features:
 - Permission management
 - Persistent conversation history
 - Error recovery and iteration
+- Rich terminal output with syntax highlighting
 """
 
 import os
@@ -33,9 +34,12 @@ import glob
 import traceback
 
 try:
-    from . import __version__
-except Exception:
-    __version__ = "0.0.0"
+    from ollama_coder import __version__
+except ImportError:
+    try:
+        from . import __version__
+    except Exception:
+        __version__ = "0.0.0"
 
 try:
     import ollama
@@ -43,10 +47,58 @@ except ImportError:
     print("Error: ollama package not found. Install with: pip install ollama")
     sys.exit(1)
 
+# Optional rich library for better output
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+    from rich.markdown import Markdown
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
+    RICH_AVAILABLE = True
+    console = Console()
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
 
 # ============================================================================
-# Configuration Management
+# Helper Functions
 # ============================================================================
+
+def print_styled(text: str, style: str = ""):
+    """Print with optional rich styling"""
+    if RICH_AVAILABLE and console:
+        console.print(text, style=style)
+    else:
+        print(text)
+
+def print_panel(content: str, title: str = "", border_style: str = "blue"):
+    """Print content in a panel if rich is available"""
+    if RICH_AVAILABLE and console:
+        console.print(Panel(content, title=title, border_style=border_style))
+    else:
+        print(f"\n{'='*60}")
+        if title:
+            print(f" {title}")
+            print("-"*60)
+        print(content)
+        print("="*60 + "\n")
+
+def print_code(code: str, language: str = "python"):
+    """Print code with syntax highlighting if rich is available"""
+    if RICH_AVAILABLE and console:
+        syntax = Syntax(code, language, theme="monokai", line_numbers=True)
+        console.print(syntax)
+    else:
+        print(code)
+
+def print_markdown(text: str):
+    """Print markdown formatted text if rich is available"""
+    if RICH_AVAILABLE and console:
+        console.print(Markdown(text))
+    else:
+        print(text)
 
 class Config:
     """Manages configuration from multiple sources with hierarchical loading"""
@@ -761,7 +813,7 @@ class WebSearchTool(Tool):
         joiner = "&" if "?" in endpoint else "?"
         url = f"{endpoint}{joiner}{query_string}"
 
-        headers = {"User-Agent": "OllamaCode/1.0"}
+        headers = {"User-Agent": "OllamaCoder/1.0"}
         api_key = (cfg.get("api_key") or "").strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -793,6 +845,125 @@ class WebSearchTool(Tool):
         return ToolResult(True, json.dumps(data, indent=2))
 
 
+class ThinkTool(Tool):
+    """Tool for structured reasoning and planning"""
+    name = "think"
+    description = "Use this tool to reason through complex problems step by step"
+    
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "think",
+                "description": "Use this tool to think through a complex problem step by step. Write out your reasoning, consider alternatives, and plan your approach. This helps you break down complex tasks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "thought": {
+                            "type": "string",
+                            "description": "Your step-by-step reasoning about the current problem or task"
+                        }
+                    },
+                    "required": ["thought"]
+                }
+            }
+        }
+    
+    def execute(self, thought: str) -> ToolResult:
+        """Record and acknowledge the thinking"""
+        return ToolResult(
+            True,
+            f"Thought recorded. Continue with your plan.\n\nYour reasoning:\n{thought[:500]}{'...' if len(thought) > 500 else ''}"
+        )
+
+
+class MultiEditTool(Tool):
+    """Edit multiple files or make multiple edits in one call"""
+    name = "multi_edit"
+    description = "Make multiple file edits in a single operation"
+    
+    def __init__(self, working_dir: Path):
+        self.working_dir = working_dir
+    
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "multi_edit",
+                "description": "Make multiple file edits in a single operation. Each edit specifies a file, old string, and new string.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "edits": {
+                            "type": "array",
+                            "description": "Array of edit operations",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "description": "File path"},
+                                    "old_str": {"type": "string", "description": "String to find"},
+                                    "new_str": {"type": "string", "description": "Replacement string"}
+                                },
+                                "required": ["path", "old_str", "new_str"]
+                            }
+                        }
+                    },
+                    "required": ["edits"]
+                }
+            }
+        }
+    
+    def execute(self, edits: List[Dict[str, str]]) -> ToolResult:
+        """Execute multiple edits"""
+        results = []
+        success_count = 0
+        fail_count = 0
+        
+        for edit in edits:
+            path = edit.get("path", "")
+            old_str = edit.get("old_str", "")
+            new_str = edit.get("new_str", "")
+            
+            try:
+                file_path = self.working_dir / path
+                if not file_path.exists():
+                    results.append(f"❌ {path}: File not found")
+                    fail_count += 1
+                    continue
+                
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                
+                if old_str not in content:
+                    results.append(f"❌ {path}: String not found")
+                    fail_count += 1
+                    continue
+                
+                count = content.count(old_str)
+                if count > 1:
+                    results.append(f"❌ {path}: Ambiguous - string appears {count} times")
+                    fail_count += 1
+                    continue
+                
+                new_content = content.replace(old_str, new_str)
+                with open(file_path, 'w') as f:
+                    f.write(new_content)
+                
+                results.append(f"✅ {path}: Edited successfully")
+                success_count += 1
+                
+            except Exception as e:
+                results.append(f"❌ {path}: {str(e)}")
+                fail_count += 1
+        
+        summary = f"Completed: {success_count} succeeded, {fail_count} failed\n\n"
+        return ToolResult(
+            fail_count == 0,
+            summary + "\n".join(results),
+            None if fail_count == 0 else f"{fail_count} edits failed"
+        )
+
+
 # ============================================================================
 # Tool Manager
 # ============================================================================
@@ -809,10 +980,12 @@ class ToolManager:
     def _register_tools(self):
         """Register all available tools"""
         self.tools = {
+            "think": ThinkTool(),
             "bash": BashTool(self.working_dir),
             "read_file": ReadFileTool(self.working_dir),
             "write_file": WriteFileTool(self.working_dir),
             "edit_file": EditFileTool(self.working_dir),
+            "multi_edit": MultiEditTool(self.working_dir),
             "list_directory": ListDirectoryTool(self.working_dir),
             "search_code": SearchCodeTool(self.working_dir),
             "git": GitTool(self.working_dir),
@@ -876,40 +1049,78 @@ class AgenticEngine:
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt with context and capabilities"""
-        prompt = """You are an agentic coding assistant running locally with Ollama. You help users with coding tasks by autonomously executing multi-step workflows.
+        prompt = """You are OllamaCoder, an advanced agentic coding assistant running locally with Ollama. You are designed to be on par with Claude Code, capable of autonomously executing complex multi-step coding tasks.
 
-Your capabilities:
-- Execute bash commands to run code, tests, git operations, etc.
-- Read, write, and edit files in the project
-- Search through codebases
-- List directory contents
-- Run git commands
-- Search the web for up-to-date information (when enabled)
-- Make autonomous decisions to complete complex tasks
+## Core Capabilities
+- **bash**: Execute shell commands for running code, tests, builds, git operations, etc.
+- **read_file**: Read file contents with optional line ranges
+- **write_file**: Create new files or overwrite existing ones
+- **edit_file**: Make surgical edits using find/replace (always read first!)
+- **list_directory**: Explore project structure
+- **search_code**: Find patterns across the codebase using grep/ripgrep
+- **git**: Version control operations
+- **web_search**: Search the web for documentation (when enabled)
 
-Your workflow:
-1. Analyze the user's request
-2. Break it down into steps
-3. Execute tools to gather context
-4. Plan your approach
-5. Execute the plan using tools
-6. Verify your work
-7. Iterate if needed
+## Agentic Workflow
+Follow this thinking process for every task:
 
-Important guidelines:
-- Always read files before editing them
-- Verify changes after making them
+### 1. UNDERSTAND
+- Parse the user's request carefully
+- Identify the core goal and any constraints
+- Ask clarifying questions if the request is ambiguous
+
+### 2. EXPLORE
+- Use list_directory to understand project structure
+- Use read_file to examine relevant files
+- Use search_code to find related code patterns
+- Gather enough context before making changes
+
+### 3. PLAN
+- Break the task into discrete, verifiable steps
+- Consider edge cases and potential issues
+- Prioritize safety - prefer reversible changes
+
+### 4. EXECUTE
+- Implement changes one step at a time
+- Always read a file before editing it
+- Make minimal, focused edits
+- Use git to track changes when appropriate
+
+### 5. VERIFY
 - Run tests after code changes
-- Run linters when relevant
-- Use git to track changes
-- Ask for clarification if needed
-- Explain what you're doing as you work
-- Be autonomous but safe - don't make destructive changes without being sure
+- Use bash to verify the changes work
+- Check for syntax errors and linting issues
+- Review the changes you made
+
+### 6. ITERATE
+- If something fails, analyze the error
+- Adjust your approach and try again
+- Learn from mistakes within the session
+
+## Critical Guidelines
+- **Safety First**: Never delete important files without confirmation
+- **Read Before Edit**: Always read a file's current content before modifying it
+- **Minimal Changes**: Make the smallest change that accomplishes the goal
+- **Explain Your Work**: Describe what you're doing and why
+- **Handle Errors Gracefully**: If a tool fails, try alternative approaches
+- **Test Your Changes**: Verify changes work before considering the task complete
+- **Use Version Control**: Commit changes with meaningful messages when appropriate
+
+## Response Format
+When responding:
+1. Acknowledge what you understand the user wants
+2. Share your plan briefly
+3. Execute the plan using tools
+4. Summarize what you accomplished
+5. Suggest next steps if relevant
 
 """
         
         if self.config.context:
-            prompt += f"\n\n# Project Context\n{self.config.context}\n"
+            prompt += f"\n\n# Project-Specific Context\n{self.config.context}\n"
+        
+        # Add current directory info
+        prompt += f"\n\n# Current Working Directory\n{self.tool_manager.working_dir}\n"
         
         return prompt
 
@@ -963,18 +1174,44 @@ Important guidelines:
             args = self._parse_tool_args(func.get("arguments", {}))
 
             if verbose:
-                print(f"🔧 Using tool: {name}")
-                if args:
-                    print(f"   Arguments: {json.dumps(args, indent=2)}")
+                # Display tool execution with nice formatting
+                tool_info = f"[bold cyan]🔧 {name}[/bold cyan]"
+                if RICH_AVAILABLE:
+                    print_styled(tool_info)
+                    if args:
+                        # Show args in a compact way
+                        args_display = json.dumps(args, indent=2)
+                        if len(args_display) > 200:
+                            args_display = args_display[:200] + "..."
+                        print_styled(f"   [dim]{args_display}[/dim]")
+                else:
+                    print(f"🔧 Using tool: {name}")
+                    if args:
+                        print(f"   Arguments: {json.dumps(args, indent=2)}")
 
             result = self.tool_manager.execute_tool(name, **args)
 
             if verbose:
-                print(f"   Result: {'✅ Success' if result.success else '❌ Failed'}")
-                if result.output:
-                    print(f"   Output: {result.output[:200]}...")
+                if result.success:
+                    status = "[green]✅ Success[/green]" if RICH_AVAILABLE else "✅ Success"
+                else:
+                    status = "[red]❌ Failed[/red]" if RICH_AVAILABLE else "❌ Failed"
+                
+                print_styled(f"   {status}") if RICH_AVAILABLE else print(f"   Result: {status}")
+                
+                if result.output and len(result.output) > 0:
+                    output_preview = result.output[:300]
+                    if len(result.output) > 300:
+                        output_preview += "..."
+                    if RICH_AVAILABLE:
+                        print_styled(f"   [dim]{output_preview}[/dim]")
+                    else:
+                        print(f"   Output: {output_preview}")
                 if result.error:
-                    print(f"   Error: {result.error}")
+                    if RICH_AVAILABLE:
+                        print_styled(f"   [red]Error: {result.error}[/red]")
+                    else:
+                        print(f"   Error: {result.error}")
                 print()
 
             self.messages.append({
@@ -996,7 +1233,13 @@ Important guidelines:
             if assistant_message.get("content"):
                 last_content = assistant_message["content"]
                 if verbose:
-                    print(f"💭 Thinking: {assistant_message['content']}\n")
+                    # Display thinking with nice formatting
+                    if RICH_AVAILABLE:
+                        print_styled(f"[bold yellow]💭 Thinking:[/bold yellow]")
+                        print_markdown(assistant_message['content'])
+                        print()
+                    else:
+                        print(f"💭 Thinking: {assistant_message['content']}\n")
 
             tool_calls = assistant_message.get("tool_calls") or []
             if not tool_calls:
@@ -1085,7 +1328,7 @@ Important guidelines:
 # ============================================================================
 
 class CLI:
-    """Command-line interface for OllamaCode"""
+    """Command-line interface for OllamaCoder"""
     
     def __init__(self, project_dir: Path):
         self.project_dir = project_dir
@@ -1436,7 +1679,7 @@ class CLI:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OllamaCode - Agentic coding assistant for Ollama",
+        description="OllamaCoder - Agentic coding assistant for Ollama (like Claude Code, but local!)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1444,7 +1687,7 @@ Examples:
   ollama-coder --auto                    # Start with auto mode enabled
   ollama-coder -p "fix the bug in app.py"  # Headless mode
   ollama-coder -p "refactor this code" --auto  # Headless + auto mode
-  ollama-coder --model glm-4.7:cloud         # Use specific model
+  ollama-coder --model codellama:13b     # Use specific model
   ollama-coder --dir /path/to/project    # Work in specific directory
         """
     )

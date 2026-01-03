@@ -1,105 +1,175 @@
-# OllamaCoder
-<img width="476" height="305" alt="Screenshot 2026-01-03 at 10 57 16 AM" src="https://github.com/user-attachments/assets/9a78f32f-0cf9-46b5-acb4-a780a1732875" />
+# OllamaCoder 🦙💻
 
-Agentic coding assistant for Ollama with tool use, autonomous mode, and project/user configuration.
+<img width="476" height="305" alt="OllamaCoder Screenshot" src="https://github.com/user-attachments/assets/9a78f32f-0cf9-46b5-acb4-a780a1732875" />
 
-## Install
+**An agentic coding assistant for Ollama - like Claude Code, but running locally!**
 
-From PyPI (after you publish):
+OllamaCoder transforms your local Ollama models into a powerful autonomous coding agent with tool use, multi-step task execution, and project-aware context.
 
-```bash
+## ✨ Features
+
+- **🤖 Agentic Architecture**: Autonomous multi-step task execution with planning, execution, and verification
+- **🔧 Full Tool System**: bash, file operations, git, code search, web search, and more
+- **💭 Think Tool**: Structured reasoning for complex problems (like extended thinking)
+- **📝 Multi-Edit**: Batch file edits in a single operation
+- **🔄 Autonomous Mode**: Let the AI work through complex tasks independently
+- **⚙️ Hierarchical Config**: User and project-level settings with OLLAMA.md context files
+- **🌐 Remote Ollama**: Connect to remote Ollama servers via OLLAMA_HOST
+- **💾 Persistent History**: Conversation history saved across sessions
+- **🎨 Rich Output**: Beautiful terminal output with syntax highlighting (optional)
+
+## 📦 Install
+
+From PyPI:
+
+\`\`\`bash
 pip install ollama-coder
-```
+\`\`\`
+
+For enhanced terminal output (recommended):
+
+\`\`\`bash
+pip install ollama-coder rich
+\`\`\`
 
 For local development:
 
-```bash
+\`\`\`bash
+git clone https://github.com/lalomorales22/ollama-coder.git
+cd ollama-coder
 pip install -e .
-```
+\`\`\`
 
-## Run
+## 🚀 Quick Start
 
-```bash
+\`\`\`bash
+# Start interactive mode
 ollama-coder
-```
 
-You will be prompted to choose a model on startup. The selected model can be saved as your default.
+# Start with autonomous mode enabled
+ollama-coder --auto
 
+# Run a single command (headless mode)
+ollama-coder -p "fix the bug in app.py"
 
-## Common Commands
+# Use a specific model
+ollama-coder --model codellama:13b
 
-- `/auto` toggle autonomous mode
-- `/models` list installed models
-- `/model` show or set the active model
-- `/host` show or set the Ollama host (for remote/cloud)
-- `/config` show effective configuration
-- `/clear` clear conversation history
-- `/quit` exit
+# Work in a specific directory
+ollama-coder --dir /path/to/project
+\`\`\`
 
-## Configuration
+## 🛠️ Available Tools
 
-User config lives at `~/.ollamacode/settings.json`. Example:
+| Tool | Description |
+|------|-------------|
+| \`think\` | Structured reasoning for complex problems |
+| \`bash\` | Execute shell commands |
+| \`read_file\` | Read file contents with optional line ranges |
+| \`write_file\` | Create or overwrite files |
+| \`edit_file\` | Make surgical edits using find/replace |
+| \`multi_edit\` | Batch multiple edits in one operation |
+| \`list_directory\` | Explore project structure |
+| \`search_code\` | Search for patterns using grep/ripgrep |
+| \`git\` | Version control operations |
+| \`web_search\` | Search the web (when configured) |
 
-```json
+## ⌨️ Commands
+
+| Command | Description |
+|---------|-------------|
+| \`/auto\` | Toggle autonomous mode |
+| \`/model\` | Show or set the active model |
+| \`/models\` | List installed Ollama models |
+| \`/host\` | Show or set the Ollama host |
+| \`/config\` | Show current configuration |
+| \`/clear\` | Clear conversation history |
+| \`/help\` | Show available commands |
+| \`/quit\` | Exit OllamaCoder |
+
+## ⚙️ Configuration
+
+User config: \`~/.ollamacode/settings.json\`
+
+\`\`\`json
 {
-  "model": "llama3:latest",
+  "model": "llama3.3:latest",
   "max_iterations": 25,
   "max_tool_rounds": 8,
+  "temperature": 0.7,
   "ollama": {
     "host": "http://127.0.0.1:11434",
-    "timeout_sec": 60,
-    "headers": {},
-    "api_key": ""
+    "timeout_sec": 60
   },
   "web_search": {
     "enabled": false,
     "provider": "custom",
     "endpoint": "",
-    "api_key": "",
-    "timeout_sec": 15,
-    "max_results": 5
+    "api_key": ""
   }
 }
-```
+\`\`\`
 
-You can also set `OLLAMA_HOST` in your environment to point at a remote server. The `/host` command updates the config and rebuilds the client at runtime.
+### Project Context
 
-## Requirements
+Create \`OLLAMA.md\` files to provide project-specific context:
 
-- Ollama server running locally or reachable via `OLLAMA_HOST`
+- \`~/.ollamacode/OLLAMA.md\` - User-level context (applies to all projects)
+- \`.ollamacode/OLLAMA.md\` - Project-level context (in your project root)
+
+## 🔌 Remote Ollama
+
+Connect to remote Ollama servers:
+
+\`\`\`bash
+# Via environment variable
+export OLLAMA_HOST=http://your-server:11434
+ollama-coder
+
+# Or use the /host command
+ollama-coder
+> /host http://your-server:11434
+\`\`\`
+
+## 📋 Requirements
+
 - Python 3.9+
+- Ollama server running locally or accessible remotely
+- Optional: \`rich\` package for enhanced terminal output
 
-## GitHub
+## 🔄 Comparison with Claude Code
 
-Repository: https://github.com/lalomorales22/ollama-code
+| Feature | OllamaCoder | Claude Code |
+|---------|-------------|-------------|
+| Local/Private | ✅ | ❌ |
+| Free | ✅ | ❌ |
+| Tool Use | ✅ | ✅ |
+| Autonomous Mode | ✅ | ✅ |
+| Thinking Tool | ✅ | ✅ |
+| Multi-Edit | ✅ | ✅ |
+| Web Search | ✅ | ✅ |
+| Project Context | ✅ | ✅ |
+| Image Analysis | ❌ | ✅ |
+| MCP Support | 🔜 | ✅ |
 
-## License
+## 📝 License
 
 MIT
 
-## Publish to PyPI
+## 🔗 Links
 
-Manual publish:
+- **GitHub**: https://github.com/lalomorales22/ollama-coder
+- **PyPI**: https://pypi.org/project/ollama-coder/
+- **Ollama**: https://ollama.ai/
 
-```bash
-python -m build
-python -m twine upload dist/*
-```
+## 📤 Publishing
 
-## Auto Publish (GitHub Actions)
+Version bumping and publishing is automated via GitHub Actions. Just:
 
-This repo includes a GitHub Actions workflow that publishes to PyPI on tags.
-
-Steps:
-1) Bump the version in `pyproject.toml` and `ollama_code/__init__.py`
-2) Commit the change
-3) Tag and push:
-   ```bash
-   git tag v0.1.1
-   git push origin v0.1.1
-   ```
-
-Trusted Publisher setup (one-time):
-- In PyPI, add a Trusted Publisher for this repo.
-- Workflow name (file): `publish.yml` (or `.github/workflows/publish.yml`)
-- Environment name: leave blank (unless you add one)
+1. Bump version in \`pyproject.toml\` and \`ollama_coder/__init__.py\`
+2. Commit and push
+3. Create and push a tag:
+   \`\`\`bash
+   git tag v0.1.3
+   git push origin v0.1.3
+   \`\`\`
