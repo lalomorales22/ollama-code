@@ -1693,7 +1693,12 @@ class CLI:
         ollama_cfg = self.config.get("ollama", {})
         host = (ollama_cfg.get("host") or "").strip() or os.environ.get("OLLAMA_HOST")
         timeout_sec = ollama_cfg.get("timeout_sec", 300)  # Default 5 minutes
-        headers = dict(ollama_cfg.get("headers") or {})
+        
+        # Only include non-empty headers
+        raw_headers = ollama_cfg.get("headers") or {}
+        headers = {k: v for k, v in raw_headers.items() if v}
+        
+        # Only add Authorization if api_key is actually set
         api_key = (ollama_cfg.get("api_key") or "").strip()
         if api_key and "Authorization" not in headers:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -1707,6 +1712,7 @@ class CLI:
             kwargs["timeout"] = httpx.Timeout(timeout_sec, connect=30.0)
         except ImportError:
             kwargs["timeout"] = timeout_sec
+        # Only pass headers if there are actual headers to pass
         if headers:
             kwargs["headers"] = headers
 
