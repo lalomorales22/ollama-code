@@ -13,6 +13,10 @@ Features:
 - Persistent conversation history
 - Error recovery and iteration
 - Rich terminal output with syntax highlighting
+- Streaming responses for better UX
+- Image/vision support for multimodal models
+- Context window management with automatic summarization
+- Plugin system for extensibility
 """
 
 import os
@@ -26,12 +30,15 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Generator, Union
 from datetime import datetime
 import re
 import shutil
 import glob
 import traceback
+import base64
+import hashlib
+import importlib.util
 
 try:
     from ollama_coder import __version__
@@ -55,11 +62,40 @@ try:
     from rich.markdown import Markdown
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from rich.table import Table
+    from rich.live import Live
     RICH_AVAILABLE = True
     console = Console()
 except ImportError:
     RICH_AVAILABLE = False
     console = None
+
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+# Approximate tokens per character (rough estimate for context management)
+CHARS_PER_TOKEN = 4
+# Default context window sizes for common models
+DEFAULT_CONTEXT_WINDOW = 8192
+MODEL_CONTEXT_WINDOWS = {
+    "llama3": 8192,
+    "llama3.1": 131072,
+    "llama3.2": 131072,
+    "llama3.3": 131072,
+    "codellama": 16384,
+    "mistral": 32768,
+    "mixtral": 32768,
+    "qwen": 32768,
+    "qwen2": 131072,
+    "deepseek": 65536,
+    "gemma": 8192,
+    "gemma2": 8192,
+    "phi3": 131072,
+}
+
+# Supported image extensions
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
 
 
 # ============================================================================
@@ -99,6 +135,62 @@ def print_markdown(text: str):
         console.print(Markdown(text))
     else:
         print(text)
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from text (rough approximation)"""
+    return len(text) // CHARS_PER_TOKEN
+
+def get_model_context_window(model_name: str) -> int:
+    """Get the context window size for a model"""
+    if not model_name:
+        return DEFAULT_CONTEXT_WINDOW
+    
+    # Check for exact or prefix match
+    model_lower = model_name.lower().split(':')[0]  # Remove tag
+    for prefix, window in MODEL_CONTEXT_WINDOWS.items():
+        if model_lower.startswith(prefix):
+            return window
+    
+    return DEFAULT_CONTEXT_WINDOW
+
+def is_image_file(path: str) -> bool:
+    """Check if a file is a supported image"""
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+def encode_image_to_base64(image_path: str) -> Optional[str]:
+    """Encode an image file to base64"""
+    try:
+        path = Path(image_path)
+        if not path.exists():
+            return None
+        with open(path, 'rb') as f:
+            return base64.b64encode(f.read()).decode('utf-8')
+    except Exception:
+        return None
+
+def extract_image_references(text: str, working_dir: Path) -> List[str]:
+    """Extract image file paths from text"""
+    images = []
+    # Match file paths that look like images
+    patterns = [
+        r'!\[.*?\]\((.*?)\)',  # Markdown image syntax
+        r'image:\s*(\S+)',      # image: path/to/file
+        r'(\S+\.(?:jpg|jpeg|png|gif|webp|bmp))',  # Direct file paths
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for match in matches:
+            # Try to resolve the path
+            if Path(match).is_absolute():
+                if Path(match).exists():
+                    images.append(match)
+            else:
+                full_path = working_dir / match
+                if full_path.exists():
+                    images.append(str(full_path))
+    
+    return list(set(images))  # Remove duplicates
 
 class Config:
     """Manages configuration from multiple sources with hierarchical loading"""
@@ -141,6 +233,22 @@ class Config:
             "permissions": {
                 "allowed_tools": ["*"],
                 "denied_tools": []
+            },
+            # New features
+            "streaming": True,  # Enable streaming responses
+            "vision": {
+                "enabled": True,  # Enable image/vision support
+                "auto_detect": True  # Auto-detect images in messages
+            },
+            "context_management": {
+                "enabled": True,  # Enable automatic context management
+                "max_context_percentage": 0.75,  # Use up to 75% of context window
+                "summarize_threshold": 0.6,  # Summarize when reaching 60%
+                "keep_recent_messages": 10  # Always keep last N messages
+            },
+            "plugins": {
+                "enabled": False,  # Enable plugin system
+                "directory": "~/.ollamacode/plugins"
             }
         }
 
@@ -1250,8 +1358,243 @@ When responding:
 
         return {"content": last_content, "completed": False}
     
-    def chat(self, user_message: str, auto_mode: bool = False) -> str:
+    # ==========================================================================
+    # Streaming Support
+    # ==========================================================================
+    
+    def _chat_streaming(self, include_tools: bool = True) -> Generator[Dict[str, Any], None, None]:
+        """Call Ollama with streaming enabled"""
+        model = self.config.get("model")
+        if not model:
+            raise RuntimeError("No model configured. Set a model before chatting.")
+
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": self.messages,
+            "stream": True
+        }
+        if include_tools:
+            payload["tools"] = self.tool_manager.get_tool_schemas()
+
+        options = self._build_options()
+        if options:
+            payload["options"] = options
+
+        return self.client.chat(**payload)
+    
+    def _single_interaction_streaming(self) -> str:
+        """Single interaction with streaming output"""
+        try:
+            full_content = ""
+            tool_calls = []
+            
+            # Stream the response
+            if RICH_AVAILABLE and console:
+                console.print("[bold green]Assistant:[/bold green] ", end="")
+            else:
+                print("Assistant: ", end="", flush=True)
+            
+            for chunk in self._chat_streaming(include_tools=True):
+                if "message" in chunk:
+                    msg = chunk["message"]
+                    
+                    # Handle content chunks
+                    if "content" in msg and msg["content"]:
+                        content_chunk = msg["content"]
+                        full_content += content_chunk
+                        print(content_chunk, end="", flush=True)
+                    
+                    # Handle tool calls (usually in the final chunk)
+                    if "tool_calls" in msg and msg["tool_calls"]:
+                        tool_calls = msg["tool_calls"]
+                
+                # Check if this is the final chunk
+                if chunk.get("done", False):
+                    break
+            
+            print()  # Newline after streaming
+            
+            # If there are tool calls, handle them
+            if tool_calls:
+                # Add the assistant message with tool calls
+                self.messages.append({
+                    "role": "assistant",
+                    "content": full_content,
+                    "tool_calls": tool_calls
+                })
+                
+                # Execute tools and continue
+                self._execute_tool_calls(tool_calls, verbose=True)
+                
+                # Get follow-up response (non-streaming for tool responses)
+                result = self._run_tool_rounds(verbose=True)
+                return result["content"]
+            else:
+                # Add the final assistant message
+                self.messages.append({
+                    "role": "assistant",
+                    "content": full_content
+                })
+            
+            return full_content
+            
+        except Exception as e:
+            # Fallback to non-streaming on error
+            error_msg = f"Streaming error: {str(e)}"
+            print(f"\n⚠️ {error_msg}, falling back to standard mode")
+            return self._single_interaction()
+    
+    # ==========================================================================
+    # Vision/Image Support
+    # ==========================================================================
+    
+    def chat_with_images(self, user_message: str, image_paths: List[str], auto_mode: bool = False) -> str:
+        """Process a message with image attachments"""
+        # Build message with images
+        images_base64 = []
+        for path in image_paths:
+            img_data = encode_image_to_base64(path)
+            if img_data:
+                images_base64.append(img_data)
+                if RICH_AVAILABLE:
+                    print_styled(f"[dim]📷 Attached image: {Path(path).name}[/dim]")
+                else:
+                    print(f"📷 Attached image: {Path(path).name}")
+        
+        if images_base64:
+            # Ollama expects images in the message
+            self.messages.append({
+                "role": "user",
+                "content": user_message,
+                "images": images_base64
+            })
+        else:
+            self.messages.append({
+                "role": "user",
+                "content": user_message
+            })
+        
+        if auto_mode:
+            return self._auto_mode_loop()
+        else:
+            return self._single_interaction_streaming() if self.config.get("streaming", True) else self._single_interaction()
+    
+    # ==========================================================================
+    # Context Window Management
+    # ==========================================================================
+    
+    def _estimate_context_usage(self) -> int:
+        """Estimate current token usage in context"""
+        total = 0
+        for msg in self.messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total += estimate_tokens(content)
+            # Count images as ~1000 tokens each (rough estimate)
+            if "images" in msg:
+                total += len(msg["images"]) * 1000
+        return total
+    
+    def _get_context_window_size(self) -> int:
+        """Get the context window size for the current model"""
+        model = self.config.get("model", "")
+        return get_model_context_window(model)
+    
+    def _should_summarize(self) -> bool:
+        """Check if we should summarize the conversation"""
+        ctx_config = self.config.get("context_management", {})
+        if not ctx_config.get("enabled", True):
+            return False
+        
+        current_usage = self._estimate_context_usage()
+        context_window = self._get_context_window_size()
+        threshold = ctx_config.get("summarize_threshold", 0.6)
+        
+        return current_usage > (context_window * threshold)
+    
+    def _summarize_conversation(self) -> None:
+        """Summarize older messages to free up context space"""
+        ctx_config = self.config.get("context_management", {})
+        keep_recent = ctx_config.get("keep_recent_messages", 10)
+        
+        if len(self.messages) <= keep_recent + 1:  # +1 for system message
+            return
+        
+        if RICH_AVAILABLE:
+            print_styled("[dim]📝 Summarizing conversation to manage context...[/dim]")
+        else:
+            print("📝 Summarizing conversation to manage context...")
+        
+        # Keep system message and recent messages
+        system_msg = self.messages[0] if self.messages and self.messages[0]['role'] == 'system' else None
+        recent_messages = self.messages[-keep_recent:]
+        old_messages = self.messages[1:-keep_recent] if system_msg else self.messages[:-keep_recent]
+        
+        if not old_messages:
+            return
+        
+        # Create a summary of old messages
+        summary_parts = []
+        for msg in old_messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, str) and content:
+                # Truncate long content
+                if len(content) > 200:
+                    content = content[:200] + "..."
+                summary_parts.append(f"[{role}]: {content}")
+        
+        summary_text = "\n".join(summary_parts)
+        
+        # Create summarized message
+        summary_message = {
+            "role": "system",
+            "content": f"[CONVERSATION SUMMARY]\nThe following is a summary of earlier conversation:\n{summary_text}\n[END SUMMARY]"
+        }
+        
+        # Rebuild messages
+        self.messages = []
+        if system_msg:
+            self.messages.append(system_msg)
+        self.messages.append(summary_message)
+        self.messages.extend(recent_messages)
+        
+        if RICH_AVAILABLE:
+            print_styled(f"[dim]   Compressed {len(old_messages)} messages into summary[/dim]")
+        else:
+            print(f"   Compressed {len(old_messages)} messages into summary")
+    
+    def get_context_stats(self) -> Dict[str, Any]:
+        """Get current context usage statistics"""
+        current_tokens = self._estimate_context_usage()
+        context_window = self._get_context_window_size()
+        return {
+            "current_tokens": current_tokens,
+            "context_window": context_window,
+            "usage_percentage": (current_tokens / context_window) * 100,
+            "message_count": len(self.messages)
+        }
+    
+    def chat(self, user_message: str, auto_mode: bool = False, images: Optional[List[str]] = None) -> str:
         """Process a user message and return response"""
+        # Check for context management
+        if self._should_summarize():
+            self._summarize_conversation()
+        
+        # Check for images in message or explicit image paths
+        vision_config = self.config.get("vision", {})
+        detected_images = []
+        
+        if vision_config.get("enabled", True):
+            if images:
+                detected_images = images
+            elif vision_config.get("auto_detect", True):
+                detected_images = extract_image_references(user_message, self.tool_manager.working_dir)
+        
+        if detected_images:
+            return self.chat_with_images(user_message, detected_images, auto_mode)
+        
+        # Regular message
         self.messages.append({
             "role": "user",
             "content": user_message
@@ -1260,7 +1603,7 @@ When responding:
         if auto_mode:
             return self._auto_mode_loop()
         else:
-            return self._single_interaction()
+            return self._single_interaction_streaming() if self.config.get("streaming", True) else self._single_interaction()
     
     def _single_interaction(self) -> str:
         """Single interaction with the model"""
@@ -1552,16 +1895,10 @@ class CLI:
         print(f"📁 Working directory: {self.project_dir}")
         print(f"🤖 Model: {self.config.get('model')}")
         print(f"⚙️  Auto mode: {'enabled' if auto_mode else 'disabled'}")
+        print(f"📡 Streaming: {'enabled' if self.config.get('streaming', True) else 'disabled'}")
         print()
-        print("Commands:")
-        print("  /auto       - Toggle autonomous mode")
-        print("  /clear      - Clear conversation history")
-        print("  /config     - Show configuration")
-        print("  /model      - Show or set model")
-        print("  /models     - List installed models")
-        print("  /host       - Show or set Ollama host")
-        print("  /help       - Show this help")
-        print("  /quit       - Exit")
+        print("Commands: /auto /clear /context /streaming /image /model /models /host /help /quit")
+        print("Type /help for details")
         print()
         
         # If prompt provided, execute and exit (headless mode)
@@ -1598,14 +1935,17 @@ class CLI:
                             continue
                         elif user_input == '/help':
                             print("\nCommands:")
-                            print("  /auto   - Toggle autonomous mode")
-                            print("  /clear  - Clear conversation history")
-                            print("  /config - Show configuration")
-                            print("  /model  - Show or set model")
-                            print("  /models - List installed models")
-                            print("  /host   - Show or set Ollama host")
-                            print("  /help   - Show this help")
-                            print("  /quit   - Exit\n")
+                            print("  /auto      - Toggle autonomous mode")
+                            print("  /clear     - Clear conversation history")
+                            print("  /config    - Show configuration")
+                            print("  /context   - Show context usage stats")
+                            print("  /streaming - Toggle streaming responses")
+                            print("  /image     - Attach image: /image <path> <message>")
+                            print("  /model     - Show or set model")
+                            print("  /models    - List installed models")
+                            print("  /host      - Show or set Ollama host")
+                            print("  /help      - Show this help")
+                            print("  /quit      - Exit\n")
                             continue
                         elif user_input == '/models':
                             self._print_models()
@@ -1655,6 +1995,52 @@ class CLI:
                             self.config.set("model", arg)
                             print(f"✅ Model set to {arg}")
                             continue
+                        elif user_input == '/context':
+                            # Show context usage stats
+                            stats = self.engine.get_context_stats()
+                            print(f"\n📊 Context Usage:")
+                            print(f"   Tokens: ~{stats['current_tokens']:,} / {stats['context_window']:,}")
+                            print(f"   Usage: {stats['usage_percentage']:.1f}%")
+                            print(f"   Messages: {stats['message_count']}")
+                            print()
+                            continue
+                        elif user_input == '/streaming':
+                            # Toggle streaming
+                            current = self.config.get("streaming", True)
+                            self.config.set("streaming", not current)
+                            print(f"✅ Streaming {'disabled' if current else 'enabled'}")
+                            continue
+                        elif user_input.startswith('/image'):
+                            # Attach image to next message
+                            parts = user_input.split(maxsplit=1)
+                            if len(parts) == 1:
+                                print("Usage: /image <path> <message>")
+                                print("       /image screenshot.png What's in this image?")
+                                continue
+                            # Parse image path and message
+                            rest = parts[1].strip()
+                            image_parts = rest.split(maxsplit=1)
+                            if len(image_parts) < 2:
+                                print("Please provide both an image path and a message")
+                                continue
+                            image_path = image_parts[0]
+                            message = image_parts[1]
+                            
+                            # Resolve path
+                            if not Path(image_path).is_absolute():
+                                image_path = str(self.project_dir / image_path)
+                            
+                            if not Path(image_path).exists():
+                                print(f"Image not found: {image_path}")
+                                continue
+                            
+                            print()
+                            response = self.engine.chat(message, auto_mode, images=[image_path])
+                            if not self.config.get("streaming", True):
+                                print(f"\nAssistant: {response}\n")
+                            else:
+                                print()
+                            continue
                         else:
                             print(f"Unknown command: {user_input}")
                             continue
@@ -1662,7 +2048,10 @@ class CLI:
                     # Process message
                     print()
                     response = self.engine.chat(user_input, auto_mode)
-                    print(f"\nAssistant: {response}\n")
+                    if not self.config.get("streaming", True):
+                        print(f"\nAssistant: {response}\n")
+                    else:
+                        print()  # Just a newline since streaming already printed
                     
                 except KeyboardInterrupt:
                     print("\n(Use /quit to exit)")
