@@ -8,7 +8,7 @@ Agentic coding assistant for Ollama with tool use, autonomous mode, and project/
 From PyPI (after you publish):
 
 ```bash
-pip install ollama-code
+pip install ollama-coder
 ```
 
 For local development:
@@ -24,6 +24,12 @@ ollama-code
 ```
 
 You will be prompted to choose a model on startup. The selected model can be saved as your default.
+
+You can also run:
+
+```bash
+ollama-coder
+```
 
 ## Common Commands
 
@@ -75,3 +81,30 @@ Repository: https://github.com/lalomorales22/ollama-code
 ## License
 
 MIT
+
+## Publish to PyPI
+
+Manual publish:
+
+```bash
+python -m build
+python -m twine upload dist/*
+```
+
+## Auto Publish (GitHub Actions)
+
+This repo includes a GitHub Actions workflow that publishes to PyPI on tags.
+
+Steps:
+1) Bump the version in `pyproject.toml` and `ollama_code/__init__.py`
+2) Commit the change
+3) Tag and push:
+   ```bash
+   git tag v0.1.1
+   git push origin v0.1.1
+   ```
+
+Trusted Publisher setup (one-time):
+- In PyPI, add a Trusted Publisher for this repo.
+- Workflow name (file): `publish.yml` (or `.github/workflows/publish.yml`)
+- Environment name: leave blank (unless you add one)

@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ollama-code"
+name = "ollama-coder"
 version = "0.1.0"
 description = "Agentic coding assistant for Ollama"
 readme = "README.md"
@@ -27,6 +27,7 @@ Issues = "https://github.com/lalomorales22/ollama-code/issues"
 
 [project.scripts]
 ollama-code = "ollama_code.cli:main"
+ollama-coder = "ollama_code.cli:main"
 
 [tool.setuptools]
 packages = ["ollama_code"]
