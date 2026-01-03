@@ -1,4 +1,5 @@
 # OllamaCode
+<img width="477" height="296" alt="Screenshot 2026-01-03 at 10 25 32 AM" src="https://github.com/user-attachments/assets/1bbe5ee1-8f5e-42af-abae-de79d08d31a9" />
 
 Agentic coding assistant for Ollama with tool use, autonomous mode, and project/user configuration.
 
