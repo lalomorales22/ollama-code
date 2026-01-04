@@ -188,7 +188,7 @@ This avoids the `--break-system-packages` issue with pip on macOS.
 
 | Version | Changes |
 |---------|---------|
-| 0.2.3 | Filter out cloud models (`:cloud` suffix) from model list |
+| 0.2.3 | Filter out cloud models, increase timeout to 10 minutes |
 | 0.2.2 | Fix 401 unauthorized (filter empty headers) |
 | 0.2.1 | Fix timeout for slow models (60s → 300s) |
 | 0.2.0 | Streaming, vision, context management, ThinkTool, MultiEditTool |

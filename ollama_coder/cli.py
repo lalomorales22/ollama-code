@@ -213,7 +213,7 @@ class Config:
             "model": None,
             "ollama": {
                 "host": "",
-                "timeout_sec": 300,  # 5 minutes for slow local models
+                "timeout_sec": 600,  # 10 minutes for slow local models
                 "headers": {},
                 "api_key": ""
             },
@@ -1695,7 +1695,7 @@ class CLI:
     def _build_ollama_client(self) -> ollama.Client:
         ollama_cfg = self.config.get("ollama", {})
         host = (ollama_cfg.get("host") or "").strip() or os.environ.get("OLLAMA_HOST")
-        timeout_sec = ollama_cfg.get("timeout_sec", 300)  # Default 5 minutes
+        timeout_sec = ollama_cfg.get("timeout_sec", 600)  # Default 10 minutes for slow local models
         
         # Only include non-empty headers
         raw_headers = ollama_cfg.get("headers") or {}
